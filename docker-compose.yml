@@ -1,0 +1,47 @@
+services:
+  app:
+    build: ./app
+    container_name: app
+    environment:
+      # Everyone fans out on write to start — the celebrity storm is the point.
+      # Flipping this to true turns on the hybrid: celebrities are pulled at
+      # read time instead of being fanned out.
+      HYBRID_ENABLED: "false"
+      PGHOST: pg
+      PGUSER: app
+      PGDATABASE: feedapp
+      REDISHOST: redis
+    ports:
+      - "8000:8000"
+    depends_on:
+      - pg
+      - redis
+    command: ["python", "/app/app.py"]
+
+  fanout-worker:
+    build: ./app
+    container_name: fanout-worker
+    environment:
+      HYBRID_ENABLED: "false"
+      PGHOST: pg
+      PGUSER: app
+      PGDATABASE: feedapp
+      REDISHOST: redis
+    depends_on:
+      - pg
+      - redis
+    command: ["python", "/app/worker.py"]
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+
+  pg:
+    image: postgres:16-alpine
+    container_name: pg
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: app
+      POSTGRES_DB: feedapp
+    volumes:
+      - ./pg/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
