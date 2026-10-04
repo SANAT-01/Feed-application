@@ -62,10 +62,10 @@ At 10M users × ~200 follows each, the Follows table alone is ~2 billion rows.
 
 ```mermaid
 flowchart TB
-    client["📱 Mobile App<br/>(Create Post / Get Feed)"]
+    alan["📱 Alan<br/>(mobile app)"]
 
-    subgraph api_layer[" "]
-        api["⚙️ Feed API"]
+    subgraph server[" "]
+        api["⚙️ App Server<br/>(Feed API)"]
     end
 
     subgraph media["Media delivery"]
@@ -73,48 +73,56 @@ flowchart TB
         s3["🗄️ Object Storage (S3)<br/>images / video"]
     end
 
-    subgraph cache_layer["Redis cache layer — feed load < 1s"]
-        feedCache[("📋 Feed-List Cache<br/>post IDs only, ≤500/user")]
-        postCache[("📝 Post-Content Cache<br/>text + media URL")]
-        celebCache[("⭐ Celebrity List Cache<br/>one shared list per celebrity")]
+    subgraph normal["NORMAL ACCOUNTS — precompute"]
+        feedCache[("📋 Redis — The Feed Cache<br/><i>a.k.a. \"the ready list\"</i><br/>John → 65, 62, …<br/>Alan → 71, 68, 64, …")]
     end
 
-    subgraph db_layer["Source of truth"]
-        usersDb[("👤 Users Table<br/>is_celebrity flag")]
-        followsDb[("🔗 Follows Table<br/>follower → followee")]
-        postsDb[("📰 Posts Table<br/>Cassandra, sharded by author+time")]
-        outboxDb[("📤 Outbox Table<br/>pending / done")]
+    isCeleb{{"is_celebrity?<br/>THE LINE — 100,000 followers"}}
+
+    subgraph celeb["CELEBRITY ACCOUNTS — read at open"]
+        celebCache[("⭐ Celebrity List Cache<br/>one shared list<br/>Messi → 88, …")]
+        postCache[("📝 Redis — The Post Cache<br/>71 · good morning<br/>68 · ░░░░░<br/>64 · ░░░░░")]
     end
 
-    subgraph pipeline["Async fan-out pipeline"]
-        poller["🔁 Outbox Poller"]
-        queue["📨 Fan-out Queue"]
-        worker["👷 Fan-out Worker"]
+    subgraph dbLayer["Database"]
+        usersDb[("users<br/>name | celeb<br/>John | –<br/>Alan | –<br/>Messi | yes")]
+        followsDb[("follows<br/>Alan → John<br/>… → John")]
+        postsDb[("posts<br/>68 · ░░░░░<br/>64 · ░░░░░<br/>71 · good morning<br/>88 · Messi ░░")]
+        outboxDb[("outbox<br/>post 71 · done")]
     end
 
-    client -->|create post / get feed| api
-    client -.->|load media| cdn
+    subgraph bgJob["The Background Job"]
+        bgWorker["Background Worker"]
+        queue[["The Queue"]]
+        workerNode(("Worker Node"))
+    end
+
+    alan --> api
+    alan -.->|load media| cdn
     cdn -.->|origin fetch| s3
 
-    api -->|insert post, txn| postsDb
-    api -->|insert outbox note, same txn| outboxDb
-    api -->|check is_celebrity| usersDb
-    api -->|read follower list| feedCache
-    api -->|fetch post content| postCache
-    api -->|pull celebrity lists| celebCache
-    postCache -.->|cache miss → read| postsDb
+    api ==>|"① read — \"the ready list\""| feedCache
+    api <==>|"② direct fetch (writes: post + outbox note, same txn)"| dbLayer
+    api --> isCeleb
+    isCeleb -->|"no → normal"| feedCache
+    isCeleb -->|"yes → celebrity"| celebCache
+    api -->|fetch content| postCache
+    api -->|pull at open| celebCache
 
-    outboxDb -.->|poll pending rows| poller
-    poller -->|publish ticket| queue
-    queue -->|deliver ticket| worker
-    worker -->|who follows author?| followsDb
-    worker -->|push post ID into every follower's list| feedCache
+    outboxDb -.->|poll pending| bgWorker
+    bgWorker -->|publish ticket| queue
+    queue -->|deliver ticket| workerNode
+    workerNode -->|who follows author?| followsDb
+    workerNode -->|push post ID into every follower's list| feedCache
+    workerNode -.->|populate content| postCache
 
-    style client fill:#1f6feb,color:#fff
+    feedCache -->|fetch content for IDs| postCache
+
+    style alan fill:#1f6feb,color:#fff
     style api fill:#238636,color:#fff
-    style worker fill:#238636,color:#fff
-    style poller fill:#238636,color:#fff
+    style bgWorker fill:#238636,color:#fff
     style queue fill:#9e6a03,color:#fff
+    style workerNode fill:#238636,color:#fff
     style feedCache fill:#8957e5,color:#fff
     style postCache fill:#8957e5,color:#fff
     style celebCache fill:#8957e5,color:#fff
@@ -124,7 +132,15 @@ flowchart TB
     style outboxDb fill:#57606a,color:#fff
     style cdn fill:#1f6feb,color:#fff
     style s3 fill:#1f6feb,color:#fff
+    style isCeleb fill:#9e6a03,color:#fff
 ```
+
+**Naming key** (mirrors the whiteboard walkthrough):
+- **"The ready list"** = the Feed-List Cache — each user's precomputed, newest-first list of post IDs (John's list, Alan's list, …).
+- **"Direct fetch"** = the write path — the App Server writes the new post + its outbox note straight to the Database in one transaction (§6.1), bypassing the cache entirely.
+- **"The Line"** = the 100,000-follower threshold on `users.is_celebrity` that decides push (normal) vs. pull (celebrity).
+- **"The Background Job"** = the outbox poller → queue → worker node pipeline that turns a pending outbox row into pushes onto every follower's ready list.
+- **"The Post Cache"** = the second Redis cache holding actual content (e.g. post 71 = "good morning"), read by *both* normal and celebrity paths once IDs are known.
 
 ### 5.1 Naive approach: fan-out-on-read (rejected)
 
