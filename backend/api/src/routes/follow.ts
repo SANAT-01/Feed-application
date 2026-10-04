@@ -2,6 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { getDb, getRedis, feedKey, FEED_LIST_CAP } from "@feed/shared";
 import { validateBody } from "../validate";
+import { requireAuth } from "../auth";
+import { writeLimiter } from "../rateLimiters";
 
 export const followRouter = Router();
 
@@ -10,9 +12,9 @@ const followSchema = z.object({
 });
 
 // POST /follow — requires Authorization: Bearer <token>. followerId is
-// always the authenticated caller (see requireAuth in index.ts), the same
-// way followerId can't be spoofed via the request body.
-followRouter.post("/follow", validateBody(followSchema), async (req, res) => {
+// always the authenticated caller, the same way followerId can't be
+// spoofed via the request body.
+followRouter.post("/follow", writeLimiter, requireAuth, validateBody(followSchema), async (req, res) => {
   const { followeeId } = req.body as z.infer<typeof followSchema>;
   const followerId = req.user!.userId;
 
@@ -46,18 +48,43 @@ followRouter.post("/follow", validateBody(followSchema), async (req, res) => {
   res.status(201).json({ followerId, followeeId });
 });
 
-// DELETE /follow — unfollow. Deliberately does NOT retroactively scrub the
-// followee's already-delivered posts out of the follower's Redis ready
-// list; it just stops FUTURE fan-out (the worker checks the live follows
-// table) and the UI stops showing them as followed. Same real-world
-// tradeoff fan-out-on-write always makes — see README §7.
-followRouter.delete("/follow", validateBody(followSchema), async (req, res) => {
+// DELETE /follow — unfollow. For a normal followee, their post ids were
+// pushed into the follower's Redis ready list by fan-out-on-write, and
+// nothing else ever re-checks the follows table before serving that list —
+// so without an explicit scrub here, their posts would keep showing up
+// until the list naturally rolls off past FEED_LIST_CAP. Celebrities need
+// no such cleanup: feed.ts pulls celebIds live from the CURRENT follows
+// table on every read, so unfollowing one stops showing their posts on the
+// very next read for free.
+followRouter.delete("/follow", writeLimiter, requireAuth, validateBody(followSchema), async (req, res) => {
   const { followeeId } = req.body as z.infer<typeof followSchema>;
   const followerId = req.user!.userId;
 
-  await getDb().query(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, [followerId, followeeId]);
+  const db = getDb();
+  const followee = await db.query("SELECT is_celebrity FROM users WHERE id = $1", [followeeId]);
+
+  await db.query(`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`, [followerId, followeeId]);
+
+  if (followee.rows[0] && !followee.rows[0].is_celebrity) {
+    await scrubFromFeed(followerId, followeeId);
+  }
+
   res.status(200).json({ followerId, followeeId, unfollowed: true });
 });
+
+async function scrubFromFeed(followerId: number, followeeId: number) {
+  const db = getDb();
+  const redis = getRedis();
+
+  const posts = await db.query(`SELECT id FROM posts WHERE author_id = $1`, [followeeId]);
+  if (posts.rowCount === 0) return;
+
+  const pipeline = redis.multi();
+  for (const row of posts.rows) {
+    pipeline.lrem(feedKey(followerId), 0, Number(row.id));
+  }
+  await pipeline.exec();
+}
 
 async function backfillFollow(followerId: number, followeeId: number) {
   const db = getDb();

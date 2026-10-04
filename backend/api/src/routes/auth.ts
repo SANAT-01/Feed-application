@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getDb } from "@feed/shared";
 import { signToken } from "../auth";
 import { validateBody } from "../validate";
+import { authLimiter } from "../rateLimiters";
 
 export const authRouter = Router();
 
@@ -21,7 +22,7 @@ const usernameSchema = z
 const signupSchema = z.object({ username: usernameSchema, password: z.string().min(8).max(200) });
 const loginSchema = z.object({ username: usernameSchema, password: z.string().min(1).max(200) });
 
-authRouter.post("/auth/signup", validateBody(signupSchema), async (req, res) => {
+authRouter.post("/auth/signup", authLimiter, validateBody(signupSchema), async (req, res) => {
   const { username, password } = req.body as z.infer<typeof signupSchema>;
   const db = getDb();
 
@@ -41,7 +42,7 @@ authRouter.post("/auth/signup", validateBody(signupSchema), async (req, res) => 
   res.status(201).json({ token, user: { id: user.id, username: user.username, isCelebrity: user.is_celebrity } });
 });
 
-authRouter.post("/auth/login", validateBody(loginSchema), async (req, res) => {
+authRouter.post("/auth/login", authLimiter, validateBody(loginSchema), async (req, res) => {
   const { username, password } = req.body as z.infer<typeof loginSchema>;
   const db = getDb();
 

@@ -2,9 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
-import rateLimit from "express-rate-limit";
 import { createLogger, getDb, getRedis, registerGracefulShutdown } from "@feed/shared";
-import { requireAuth } from "./auth";
 import { authRouter } from "./routes/auth";
 import { usersRouter } from "./routes/users";
 import { followRouter } from "./routes/follow";
@@ -34,12 +32,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Generous for reads, tighter for writes, tightest for auth (brute-force /
-// credential-stuffing resistance on login & signup).
-const readLimiter = rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false });
-const writeLimiter = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false });
-const authLimiter = rateLimit({ windowMs: 60_000, limit: 20, standardHeaders: true, legacyHeaders: false });
-
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // Liveness vs readiness: health just says the process is up; ready checks it
@@ -56,9 +48,12 @@ app.get("/ready", async (_req, res) => {
   }
 });
 
-app.use(authLimiter, authRouter);
-app.use(readLimiter, usersRouter, feedRouter, profileRouter);
-app.use(writeLimiter, requireAuth, followRouter, postsRouter);
+// Each router now carries its own rate limiter (and, where needed,
+// requireAuth) per-route — see rateLimiters.ts for why that must be scoped
+// per-route rather than mounted globally here.
+app.use(authRouter);
+app.use(usersRouter, feedRouter, profileRouter);
+app.use(followRouter, postsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: "not found" });

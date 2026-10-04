@@ -21,13 +21,15 @@ RUN npm run build --workspace=@feed/shared \
  && npm prune --omit=dev
 
 FROM node:20-alpine AS runtime
-RUN addgroup -g 1001 nodejs && adduser -D -u 1001 -G nodejs nodejs
+RUN apk add --no-cache su-exec \
+ && addgroup -g 1001 nodejs && adduser -D -u 1001 -G nodejs nodejs
 WORKDIR /repo
 COPY --from=build --chown=nodejs:nodejs /repo /repo
+COPY --chmod=755 backend/api/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 WORKDIR /repo/backend/api
-USER nodejs
 ENV NODE_ENV=production
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:8000/health',r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]

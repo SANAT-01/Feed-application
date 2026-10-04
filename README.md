@@ -338,8 +338,12 @@ backend/
   shared/              DB/Redis/Kafka clients, logger, types — used by the 3 services above
 nginx/                 reverse proxy / edge
 pg/                    Postgres schema + seed data
-docker-compose.yml
+docker-compose.yml           production/VPS topology — reads secrets from .env, shared Postgres/Redis
+local-docker-compose.yml     local dev topology — self-contained, hardcoded env, no .env needed
 ```
+
+Local dev: `docker compose -f local-docker-compose.yml up -d --build`.
+Production/VPS: copy `.env.example` to `.env`, fill it in, then `docker compose up -d --build` (plain `docker-compose.yml`, picked up by compose automatically).
 
 | HLD component | Implementation |
 |---|---|
@@ -350,7 +354,7 @@ docker-compose.yml
 | Fan-out Worker | `backend/fanout-worker/` — Kafka consumer group `fanout-workers`, scale with `docker compose up --build --scale fanout-worker=3` |
 | Users / Follows / Posts / Outbox tables | **PostgreSQL** (`pg/init.sql`) |
 | Feed-List Cache / Post-Content Cache / Celebrity List Cache | **Redis** (`feed:<id>`, `post:<id>`, `celeb:<id>` — see `backend/shared/src/redis.ts`) |
-| Local storage bucket (S3 stand-in) | Docker named volume (`media-data`), written by the API, served read-only by nginx at `/media/*` — see the note in `docker-compose.yml` on why this isn't MinIO |
+| Local storage bucket (S3 stand-in) | Docker named volume (`media-data`), written by the API, served read-only by nginx at `/media/*` — see the note in `local-docker-compose.yml` on why this isn't MinIO |
 | CDN / edge | **nginx** — reverse-proxies `/` → frontend, `/api` → api, `/media` → the media volume |
 | Auth | JWT (`backend/api/src/auth.ts`), passwords hashed with bcrypt — see §9.1 below |
 
@@ -358,12 +362,12 @@ docker-compose.yml
 
 **Production-grade bits worth knowing about:**
 - Every service Dockerfile is multi-stage: deps → build (compiles TS, prunes dev dependencies) → runtime (small `node:20-alpine`, non-root user, `HEALTHCHECK`).
-- `docker-compose.yml` wires real health checks (`pg_isready`, `redis-cli ping`, Kafka's broker-api-versions probe, the API's own `/health`) and gates startup order on `condition: service_healthy`, not just container-start order.
+- Both compose files wire real health checks (`pg_isready`, `redis-cli ping`, Kafka's broker-api-versions probe, the API's own `/health`) and gate startup order on `condition: service_healthy`, not just container-start order.
 - `api`/`outbox-poller`/`fanout-worker` all handle `SIGTERM`/`SIGINT` for a clean shutdown (closing the DB pool, disconnecting Redis/Kafka) instead of being killed mid-request.
 - Structured JSON logs (`pino`) throughout; set `LOG_PRETTY=true` locally for human-readable output.
 - The API validates all write-route bodies with `zod`, sets security headers (`helmet`), compresses responses, and rate-limits reads/writes/auth separately (auth gets the tightest limit — brute-force resistance).
-- **Only `nginx` (and, for convenience, `web`) have host ports.** `api` has none — it's reachable only through nginx's `/api` route, same as it would be behind a real gateway. `postgres`/`redis`/`kafka` have none either; `docker-compose.override.yml` (auto-loaded, no flag needed) adds those back for local debugging only.
-- Credentials/ports are overridable via `.env` (copy `.env.example`); **`JWT_SECRET` is the one required variable** — compose refuses to start `api` without it, since there's no safe default for a token-signing secret.
+- **Only `nginx` (and, for convenience, `web`) have host ports in `local-docker-compose.yml`.** `api` has none — it's reachable only through nginx's `/api` route, same as it would be behind a real gateway. In `docker-compose.yml` (production), nothing but `nginx` has a host port at all — Traefik is the only way in.
+- `docker-compose.yml` requires every credential from `.env` (copy `.env.example`) with no defaults — there's no safe default for secrets to infrastructure shared with other apps on the box. `local-docker-compose.yml` needs no `.env` at all; every value is hardcoded for a self-contained local stack.
 - `npm run lint` / `npm run format` (ESLint flat config + Prettier) and `npm run typecheck` run across every workspace from the root.
 - `nginx.conf` resolves `api`/`web` through Docker's embedded DNS (`resolver 127.0.0.11 valid=10s`) via variables, not a static `upstream {}` block. A static upstream resolves once at nginx startup and caches that IP forever — recreate `api` or `web` (a redeploy, a crash restart) without also restarting nginx, and every request would 502 against the dead container's old IP. Verified by force-recreating `api`+`web` while leaving `nginx` untouched and confirming requests still succeed.
 
