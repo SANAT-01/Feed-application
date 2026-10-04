@@ -1,41 +1,46 @@
 const PALETTE = [
-  "linear-gradient(135deg, #f58529, #dd2a7b)", // IG-ish gradient
-  "linear-gradient(135deg, #3fb8c4, #1f6feb)",
-  "linear-gradient(135deg, #a78bfa, #f472b6)",
-  "linear-gradient(135deg, #4ade80, #3fb8c4)",
-  "linear-gradient(135deg, #f2c14e, #dd2a7b)",
-  "linear-gradient(135deg, #60a5fa, #a78bfa)",
+  ["#f58529", "#dd2a7b"],
+  ["#3fb8c4", "#1f6feb"],
+  ["#a78bfa", "#f472b6"],
+  ["#4ade80", "#0ea5e9"],
+  ["#fbbf24", "#ef4444"],
+  ["#60a5fa", "#8b5cf6"],
+  ["#fb7185", "#f59e0b"],
+  ["#2dd4bf", "#6366f1"],
 ];
 
-function colorFor(username: string): string {
-  let hash = 0;
-  for (let i = 0; i < username.length; i++) hash = (hash * 31 + username.charCodeAt(i)) >>> 0;
-  return PALETTE[hash % PALETTE.length];
+function hash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
 }
+
+/** Stable per-username gradient — also reused for profile banners. */
+export function gradientFor(username: string, angle = 135): string {
+  const [a, b] = PALETTE[hash(username) % PALETTE.length];
+  return `linear-gradient(${angle}deg, ${a}, ${b})`;
+}
+
+export type AvatarRing = "story" | "seen" | "creator" | "none";
 
 export default function Avatar({
   username,
   size = 40,
-  ring = false,
+  ring = "none",
 }: {
   username: string;
   size?: number;
-  ring?: boolean;
+  ring?: AvatarRing;
 }) {
-  const initial = username.slice(0, 1).toUpperCase();
-  return (
-    <div
+  const inner = (
+    <span
       className="avatar"
-      style={{
-        width: size,
-        height: size,
-        fontSize: size * 0.42,
-        background: colorFor(username),
-        boxShadow: ring ? "0 0 0 2px #0b0b0c, 0 0 0 4px #f2c14e" : undefined,
-      }}
+      style={{ width: size, height: size, fontSize: size * 0.42, background: gradientFor(username) }}
       aria-hidden
     >
-      {initial}
-    </div>
+      {username.slice(0, 1).toUpperCase()}
+    </span>
   );
+  if (ring === "none") return inner;
+  return <span className={`avatar-ring avatar-ring-${ring}`}>{inner}</span>;
 }
