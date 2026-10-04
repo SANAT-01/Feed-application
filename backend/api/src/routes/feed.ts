@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getDb, getRedis, feedKey, celebKey, postKey, CachedPost } from "@feed/shared";
 import { requireAuth } from "../auth";
 import { readLimiter } from "../rateLimiters";
+import { asyncHandler } from "../asyncHandler";
 
 export const feedRouter = Router();
 
@@ -15,7 +16,7 @@ const PAGE_SIZE = 50;
 //   3. Merge by post id (ids are sequential, so id desc == newest first).
 //   4. Resolve ids -> content via the post-content cache, falling back to
 //      Postgres on a miss and backfilling the cache.
-feedRouter.get("/feed/me", readLimiter, requireAuth, async (req, res) => {
+feedRouter.get("/feed/me", readLimiter, requireAuth, asyncHandler(async (req, res) => {
   const userId = req.user!.userId;
 
   const db = getDb();
@@ -49,7 +50,7 @@ feedRouter.get("/feed/me", readLimiter, requireAuth, async (req, res) => {
     precomputed: normalIds.length,
     pulledFromCelebrities: celebIds.length,
   });
-});
+}));
 
 async function resolveContent(
   db: ReturnType<typeof getDb>,

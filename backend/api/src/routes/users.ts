@@ -2,6 +2,7 @@ import { Router } from "express";
 import { getDb } from "@feed/shared";
 import { optionalAuth } from "../auth";
 import { readLimiter } from "../rateLimiters";
+import { asyncHandler } from "../asyncHandler";
 
 export const usersRouter = Router();
 
@@ -10,7 +11,7 @@ export const usersRouter = Router();
 // isFollowedByMe per row when there's a valid token, so Explore/Suggested
 // Accounts can render the right Follow/Following state without a separate
 // round trip per user.
-usersRouter.get("/users", readLimiter, optionalAuth, async (req, res) => {
+usersRouter.get("/users", readLimiter, optionalAuth, asyncHandler(async (req, res) => {
   const { rows } = await getDb().query(
     `SELECT u.id, u.username, u.is_celebrity,
             EXISTS(
@@ -28,4 +29,4 @@ usersRouter.get("/users", readLimiter, optionalAuth, async (req, res) => {
       isFollowedByMe: req.user ? r.is_followed_by_me : null,
     })),
   });
-});
+}));

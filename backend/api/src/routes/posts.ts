@@ -6,6 +6,7 @@ import { saveMedia } from "../media";
 import { validateBody } from "../validate";
 import { requireAuth } from "../auth";
 import { writeLimiter } from "../rateLimiters";
+import { asyncHandler } from "../asyncHandler";
 
 export const postsRouter = Router();
 
@@ -32,7 +33,7 @@ postsRouter.post(
   requireAuth,
   upload.single("media"),
   validateBody(createPostSchema),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { body } = req.body as z.infer<typeof createPostSchema>;
     const authorId = req.user!.userId;
 
@@ -77,5 +78,5 @@ postsRouter.post(
       mediaUrl,
       fanout: "queued",
     });
-  }
+  })
 );

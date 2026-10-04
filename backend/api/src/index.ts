@@ -13,6 +13,11 @@ import { profileRouter } from "./routes/profile";
 export const logger = createLogger("api");
 
 const app = express();
+// nginx is the only thing in front of this service (one hop), and it sets
+// X-Forwarded-For. Without this, express-rate-limit refuses to trust that
+// header (ERR_ERL_UNEXPECTED_X_FORWARDED_FOR) and every client behind nginx
+// would also get rate-limited together as if they were nginx's single IP.
+app.set("trust proxy", 1);
 app.disable("x-powered-by");
 app.use(helmet());
 app.use(compression());

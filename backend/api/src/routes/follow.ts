@@ -4,6 +4,7 @@ import { getDb, getRedis, feedKey, FEED_LIST_CAP } from "@feed/shared";
 import { validateBody } from "../validate";
 import { requireAuth } from "../auth";
 import { writeLimiter } from "../rateLimiters";
+import { asyncHandler } from "../asyncHandler";
 
 export const followRouter = Router();
 
@@ -14,7 +15,7 @@ const followSchema = z.object({
 // POST /follow — requires Authorization: Bearer <token>. followerId is
 // always the authenticated caller, the same way followerId can't be
 // spoofed via the request body.
-followRouter.post("/follow", writeLimiter, requireAuth, validateBody(followSchema), async (req, res) => {
+followRouter.post("/follow", writeLimiter, requireAuth, validateBody(followSchema), asyncHandler(async (req, res) => {
   const { followeeId } = req.body as z.infer<typeof followSchema>;
   const followerId = req.user!.userId;
 
@@ -46,7 +47,7 @@ followRouter.post("/follow", writeLimiter, requireAuth, validateBody(followSchem
   }
 
   res.status(201).json({ followerId, followeeId });
-});
+}));
 
 // DELETE /follow — unfollow. For a normal followee, their post ids were
 // pushed into the follower's Redis ready list by fan-out-on-write, and
@@ -56,7 +57,7 @@ followRouter.post("/follow", writeLimiter, requireAuth, validateBody(followSchem
 // no such cleanup: feed.ts pulls celebIds live from the CURRENT follows
 // table on every read, so unfollowing one stops showing their posts on the
 // very next read for free.
-followRouter.delete("/follow", writeLimiter, requireAuth, validateBody(followSchema), async (req, res) => {
+followRouter.delete("/follow", writeLimiter, requireAuth, validateBody(followSchema), asyncHandler(async (req, res) => {
   const { followeeId } = req.body as z.infer<typeof followSchema>;
   const followerId = req.user!.userId;
 
@@ -70,7 +71,7 @@ followRouter.delete("/follow", writeLimiter, requireAuth, validateBody(followSch
   }
 
   res.status(200).json({ followerId, followeeId, unfollowed: true });
-});
+}));
 
 async function scrubFromFeed(followerId: number, followeeId: number) {
   const db = getDb();

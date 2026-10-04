@@ -2,13 +2,14 @@ import { Router, type Request, type Response } from "express";
 import { getDb } from "@feed/shared";
 import { optionalAuth } from "../auth";
 import { readLimiter } from "../rateLimiters";
+import { asyncHandler } from "../asyncHandler";
 
 export const profileRouter = Router();
 
 // GET /users/:id — profile header data: counts + (if logged in) whether the
 // caller follows this person. Public — optionalAuth just adds the
 // isFollowedByMe field when there's a valid token, instead of requiring one.
-profileRouter.get("/users/:id", readLimiter, optionalAuth, async (req, res) => {
+profileRouter.get("/users/:id", readLimiter, optionalAuth, asyncHandler(async (req, res) => {
   const userId = Number(req.params.id);
   if (!userId) return res.status(400).json({ error: "bad user id" });
 
@@ -45,12 +46,12 @@ profileRouter.get("/users/:id", readLimiter, optionalAuth, async (req, res) => {
     isFollowedByMe,
     isMe: req.user?.userId === userId,
   });
-});
+}));
 
 // GET /users/:id/posts — this user's own post history (their profile grid),
 // straight from Postgres. Distinct from GET /feed/me, which is the VIEWER's
 // personalized home timeline assembled from Redis.
-profileRouter.get("/users/:id/posts", readLimiter, async (req, res) => {
+profileRouter.get("/users/:id/posts", readLimiter, asyncHandler(async (req, res) => {
   const userId = Number(req.params.id);
   if (!userId) return res.status(400).json({ error: "bad user id" });
 
@@ -69,7 +70,7 @@ profileRouter.get("/users/:id/posts", readLimiter, async (req, res) => {
       createdAt: r.created_at,
     })),
   });
-});
+}));
 
 async function userList(req: Request, res: Response, direction: "followers" | "following") {
   const userId = Number(req.params.id);
@@ -102,5 +103,15 @@ async function userList(req: Request, res: Response, direction: "followers" | "f
   });
 }
 
-profileRouter.get("/users/:id/followers", readLimiter, optionalAuth, (req, res) => userList(req, res, "followers"));
-profileRouter.get("/users/:id/following", readLimiter, optionalAuth, (req, res) => userList(req, res, "following"));
+profileRouter.get(
+  "/users/:id/followers",
+  readLimiter,
+  optionalAuth,
+  asyncHandler((req, res) => userList(req, res, "followers"))
+);
+profileRouter.get(
+  "/users/:id/following",
+  readLimiter,
+  optionalAuth,
+  asyncHandler((req, res) => userList(req, res, "following"))
+);
