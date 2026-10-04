@@ -1,0 +1,27 @@
+{
+  "name": "feed-application",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend/*"
+  ],
+  "scripts": {
+    "postinstall": "npm run build --workspace=@feed/shared",
+    "dev:web": "npm run dev --workspace=@feed/web",
+    "dev:api": "npm run dev --workspace=@feed/api",
+    "dev:outbox-poller": "npm run dev --workspace=@feed/outbox-poller",
+    "dev:fanout-worker": "npm run dev --workspace=@feed/fanout-worker",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.7.0",
+    "eslint": "^9.7.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "typescript-eslint": "^8.0.0"
+  }
+}

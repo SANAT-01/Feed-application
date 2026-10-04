@@ -320,3 +320,89 @@ flowchart TD
 ## 8. One-paragraph summary
 
 A normal account's post and its outbox note are written together in one DB transaction; a poller turns the pending outbox row into a queue ticket; a worker consumes it and pushes the post ID into every follower's Redis feed list (capped at 500 entries each). Celebrity accounts skip this entirely — their posts live in one shared cache list, pulled and merged at read time. `GET /feed` reads the user's precomputed list, pulls in any followed celebrities' lists, fetches actual content from a second cache (falling back to a sharded Cassandra Posts table on a miss), and returns the newest 50. Inactive users get no precomputed list at all — their feed is built lazily on return. Viral posts get replicated across cache nodes; backlogged fan-out prioritizes currently-active followers first. The same design generalizes directly to Twitter, Instagram, or Facebook — it's the same problem under a different name.
+
+---
+
+## 9. Reference implementation (v1)
+
+The design above is implemented as a runnable Node/TypeScript monorepo at the root of this repo — one top-level folder per component (an earlier Python-only lab now lives in [`legacy-python-lab/`](legacy-python-lab/)).
+
+![Feed application — implemented architecture](docs/hld-implementation.svg)
+
+```
+frontend/              Next.js client
+backend/
+  api/                 Express — Feed API
+  outbox-poller/       relays pending outbox rows to Kafka
+  fanout-worker/       Kafka consumer — push (normal) / pull-cache (celebrity)
+  shared/              DB/Redis/Kafka clients, logger, types — used by the 3 services above
+nginx/                 reverse proxy / edge
+pg/                    Postgres schema + seed data
+docker-compose.yml
+```
+
+| HLD component | Implementation |
+|---|---|
+| Client | `frontend/` — Next.js (standalone production build) |
+| App Server / Feed API | `backend/api/` — Express |
+| Outbox Poller | `backend/outbox-poller/` |
+| Queue | **Kafka** (single-broker, KRaft mode — no ZooKeeper) |
+| Fan-out Worker | `backend/fanout-worker/` — Kafka consumer group `fanout-workers`, scale with `docker compose up --build --scale fanout-worker=3` |
+| Users / Follows / Posts / Outbox tables | **PostgreSQL** (`pg/init.sql`) |
+| Feed-List Cache / Post-Content Cache / Celebrity List Cache | **Redis** (`feed:<id>`, `post:<id>`, `celeb:<id>` — see `backend/shared/src/redis.ts`) |
+| Local storage bucket (S3 stand-in) | Docker named volume (`media-data`), written by the API, served read-only by nginx at `/media/*` — see the note in `docker-compose.yml` on why this isn't MinIO |
+| CDN / edge | **nginx** — reverse-proxies `/` → frontend, `/api` → api, `/media` → the media volume |
+| Auth | JWT (`backend/api/src/auth.ts`), passwords hashed with bcrypt — see §9.1 below |
+
+`backend/shared` is compiled to plain JS (`npm run build`, wired as the root `postinstall` script) and consumed by `api`, `outbox-poller`, and `fanout-worker` as an npm workspace — all three run compiled output in production, not `tsx`.
+
+**Production-grade bits worth knowing about:**
+- Every service Dockerfile is multi-stage: deps → build (compiles TS, prunes dev dependencies) → runtime (small `node:20-alpine`, non-root user, `HEALTHCHECK`).
+- `docker-compose.yml` wires real health checks (`pg_isready`, `redis-cli ping`, Kafka's broker-api-versions probe, the API's own `/health`) and gates startup order on `condition: service_healthy`, not just container-start order.
+- `api`/`outbox-poller`/`fanout-worker` all handle `SIGTERM`/`SIGINT` for a clean shutdown (closing the DB pool, disconnecting Redis/Kafka) instead of being killed mid-request.
+- Structured JSON logs (`pino`) throughout; set `LOG_PRETTY=true` locally for human-readable output.
+- The API validates all write-route bodies with `zod`, sets security headers (`helmet`), compresses responses, and rate-limits reads/writes/auth separately (auth gets the tightest limit — brute-force resistance).
+- **Only `nginx` (and, for convenience, `web`) have host ports.** `api` has none — it's reachable only through nginx's `/api` route, same as it would be behind a real gateway. `postgres`/`redis`/`kafka` have none either; `docker-compose.override.yml` (auto-loaded, no flag needed) adds those back for local debugging only.
+- Credentials/ports are overridable via `.env` (copy `.env.example`); **`JWT_SECRET` is the one required variable** — compose refuses to start `api` without it, since there's no safe default for a token-signing secret.
+- `npm run lint` / `npm run format` (ESLint flat config + Prettier) and `npm run typecheck` run across every workspace from the root.
+- `nginx.conf` resolves `api`/`web` through Docker's embedded DNS (`resolver 127.0.0.11 valid=10s`) via variables, not a static `upstream {}` block. A static upstream resolves once at nginx startup and caches that IP forever — recreate `api` or `web` (a redeploy, a crash restart) without also restarting nginx, and every request would 502 against the dead container's old IP. Verified by force-recreating `api`+`web` while leaving `nginx` untouched and confirming requests still succeed.
+
+### 9.1 Auth
+
+Every account has a bcrypt `password_hash` (seeded via Postgres's `pgcrypto` extension, verified in Node with `bcryptjs` — same hash format, either side can check the other's). `POST /auth/signup` and `POST /auth/login` each return a JWT; the frontend stores it in `localStorage` and sends it as `Authorization: Bearer <token>` on every write.
+
+**`authorId`/`followerId` are never read from the request body** — `requireAuth` middleware decodes the token and the route handlers use `req.user.userId`. This closes the obvious hole a demo "pick who to post as" dropdown has: nothing lets you post or follow as someone else just by changing a form field.
+
+There's also no "view anyone's feed by id" route — `GET /feed/me` requires auth and always returns the caller's own feed, derived from the token, same as a real app's home timeline. The frontend has no "viewing as" selector either; it only ever shows (and lets you post to) the logged-in user's own feed. `GET /users` is the one public, unauthenticated read — a directory of who's on the platform, to follow.
+
+Seeded demo accounts (`alice`, `bob`, `carol`, `starlet`) all log in with the password `password123`.
+
+### 9.2 Follow backfill
+
+Fan-out-on-write only pushes a post to the followers that existed **at post time**. Follow someone with an existing history and, without this, their past posts would simply never appear for you — only their *next* post would, once the fan-out worker next runs. `POST /follow` (`backend/api/src/routes/follow.ts`) fixes this: on a brand-new follow of a non-celebrity account, it pulls the followee's most recent posts (up to the 500-entry cap) straight from Postgres and merges them into the follower's Redis ready list, re-sorted newest-first. Celebrities don't need this — `GET /feed/me` already pulls their list live on every read regardless of when you followed them (§6.2).
+
+**A real, separate bug this surfaced:** `posts.id` is a Postgres `bigint`, and `node-postgres` returns `bigint` columns as **strings**, not numbers, to avoid precision loss. `backend/api/src/routes/feed.ts` was keying a `Map` by that unconverted string id when resolving a cache miss, then looking it up with the real numeric id from the Redis list — `"1" !== 1`, so the lookup silently failed and the post vanished from the response, even though `precomputed`/`pulledFromCelebrities` correctly counted it. This was invisible in normal operation because the fan-out worker always pre-warms the post-content cache, so a cache miss never happened — until the backfill feature above introduced the first code path that actually resolves a *cold* post. The same LRU eviction the post-content cache relies on (§7) would have hit this in production eventually regardless. Fixed by casting to `Number(...)` at every point a `bigint` id crosses from Postgres into JS, in `feed.ts`, `fanout-worker`, `posts.ts`, and `outbox-poller`.
+
+### 9.3 Admin / debug tools
+
+**pgAdmin** and **RedisInsight** run as their own containers, exposed directly on the host (not behind nginx — they're operator tools, not app traffic):
+
+| Tool | URL | Login |
+|---|---|---|
+| pgAdmin | http://localhost:5050 | `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` from `.env` (default `admin@example.com` / `admin`) — then add a server: host `postgres`, port `5432`, user/password/db from `.env` |
+| RedisInsight | http://localhost:5540 | none by default — add a database: host `redis`, port `6379` |
+
+In a real deployment these would sit behind a VPN or SSO, not an open port — fine for local dev, not something to carry as-is into production.
+
+**Run it:**
+
+```bash
+cp .env.example .env
+# edit .env: set JWT_SECRET (e.g. `openssl rand -base64 48`)
+npm install               # installs all workspaces, builds backend/shared once
+docker compose up --build
+```
+
+Then open **http://localhost:8080** (nginx) and log in with a seeded user (`alice` / `password123`), or sign up. The seeded demo data has `starlet` as a celebrity account and `alice`/`bob`/`carol` as normal accounts following each other and `starlet` — post as `starlet` and watch the hybrid pull path kick in instead of a fan-out write.
+
+> If you have an existing local `pg-data` volume from before auth was added, `password_hash` won't exist on it (`pg/init.sql` only runs once, against an empty volume) and login will fail with a column error. Run `docker compose down -v` once to reset it — it's only seed/demo data.

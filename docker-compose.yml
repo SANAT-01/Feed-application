@@ -1,47 +1,208 @@
+# Production topology: `web` is exposed directly (its own host port) and is
+# also reachable through nginx at "/". `api` has NO direct host port — it
+# sits behind nginx's "/api" route only, same as a real backend would behind
+# a gateway. postgres/redis/kafka have no host ports either on purpose;
+# `docker-compose.override.yml` (auto-loaded alongside this file, no -f flag
+# needed) adds those back for local debugging (`psql`, `redis-cli`, etc.).
 services:
-  app:
-    build: ./app
-    container_name: app
-    environment:
-      # Everyone fans out on write to start — the celebrity storm is the point.
-      # Flipping this to true turns on the hybrid: celebrities are pulled at
-      # read time instead of being fanned out.
-      HYBRID_ENABLED: "false"
-      PGHOST: pg
-      PGUSER: app
-      PGDATABASE: feedapp
-      REDISHOST: redis
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${NGINX_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - media-data:/media:ro
     depends_on:
-      - pg
-      - redis
-    command: ["python", "/app/app.py"]
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
 
-  fanout-worker:
-    build: ./app
-    container_name: fanout-worker
-    environment:
-      HYBRID_ENABLED: "false"
-      PGHOST: pg
-      PGUSER: app
-      PGDATABASE: feedapp
-      REDISHOST: redis
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: web
+    restart: unless-stopped
+    # ports:
+    #   - "${WEB_PORT:-3000}:3000"
     depends_on:
-      - pg
-      - redis
-    command: ["python", "/app/worker.py"]
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/api/Dockerfile
+    container_name: api
+    restart: unless-stopped
+    environment:
+      PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-app}
+      PGDATABASE: ${POSTGRES_DB:-feedapp}
+      REDIS_URL: redis://redis:6379
+      MEDIA_DIR: /media
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env — see .env.example}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-2h}
+    volumes:
+      - media-data:/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # The outbox pattern's relay (README §6.1): turns pending outbox rows into
+  # Kafka messages. Safe to run more than one replica (SELECT ... FOR UPDATE
+  # SKIP LOCKED).
+  outbox-poller:
+    build:
+      context: .
+      dockerfile: backend/outbox-poller/Dockerfile
+    container_name: outbox-poller
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-app}
+      PGDATABASE: ${POSTGRES_DB:-feedapp}
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # The fan-out consumer (README §6.1/§6.2). Scale with:
+  #   docker compose up --build --scale fanout-worker=3
+  # — see README §7 "Fan-out backlog / latency spike". No container_name /
+  # host port here on purpose, so scaling doesn't collide.
+  fanout-worker:
+    build:
+      context: .
+      dockerfile: backend/fanout-worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-app}
+      PGDATABASE: ${POSTGRES_DB:-feedapp}
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-feedapp}
+    volumes:
+      - ./pg/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-feedapp}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     container_name: redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  pg:
-    image: postgres:16-alpine
-    container_name: pg
+  # Single-broker Kafka in KRaft mode — no ZooKeeper needed for local dev.
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: kafka
+    restart: unless-stopped
     environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
-      POSTGRES_USER: app
-      POSTGRES_DB: feedapp
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # --- Admin/debug tools -----------------------------------------------
+  # Exposed directly on their own host ports — these are operator tools, not
+  # part of the app's request path, so they don't go through nginx. In a
+  # real deployment you'd put these behind a VPN/SSO, not the open internet;
+  # here they're guarded only by their own login screens.
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
     volumes:
-      - ./pg/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    restart: unless-stopped
+    environment:
+      RI_APP_PORT: 5540
+    ports:
+      - "${REDISINSIGHT_PORT:-5540}:5540"
+    volumes:
+      - redisinsight-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  pg-data:
+  pgadmin-data:
+  redisinsight-data:
+  # The "local storage bucket" (README §6.3's S3 stand-in): a plain Docker
+  # volume the API writes uploaded media into and nginx serves back out of
+  # read-only at /media/* (nginx stands in for the CDN in front of it).
+  #
+  # NOTE: this replaces an earlier MinIO-based design — both minio/minio and
+  # quay.io/minio/minio now refuse anonymous pulls (MinIO gated their public
+  # container images), so a real S3-compatible server isn't freely runnable
+  # here anymore. Swap this volume back for MinIO (or LocalStack) if you have
+  # registry credentials and want real presigned-URL / multipart-upload
+  # semantics — the API's media.ts module is the only place that would change.
+  media-data:

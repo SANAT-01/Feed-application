@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+**/.next
+**/*.tsbuildinfo
+.git
+.gitignore
+*.md
+legacy-python-lab
+docs
+.env
+.env.*
+!.env.example

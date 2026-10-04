@@ -1,0 +1,184 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 980" width="1560" height="980" role="img" aria-label="Feed application — implemented architecture">
+  <style>
+    .hand { font-family: 'Comic Sans MS', 'Chalkboard SE', 'Marker Felt', 'Segoe Print', cursive; font-weight: 700; font-style: italic; letter-spacing: 0.5px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .amber { fill: #f2c14e; } .teal { fill: #3fb8c4; } .purple { fill: #a78bfa; }
+    .pink { fill: #f472b6; } .white { fill: #e5e7eb; } .gray { fill: #8b8f97; } .green { fill: #4ade80; }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#b5b9c0" stroke-width="1.8"/>
+    </marker>
+    <marker id="ah-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#f2c14e" stroke-width="1.8"/>
+    </marker>
+    <marker id="ah-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#3fb8c4" stroke-width="1.8"/>
+    </marker>
+    <marker id="ah-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10" fill="none" stroke="#4ade80" stroke-width="1.8"/>
+    </marker>
+    <g id="redis">
+      <path d="M0,16 L15,22 L30,16 L30,22 L15,28 L0,22 Z" fill="#a8261c"/>
+      <path d="M0,9 L15,15 L30,9 L30,15 L15,21 L0,15 Z" fill="#c9332a"/>
+      <path d="M0,4 L15,-2 L30,4 L30,8 L15,14 L0,8 Z" fill="#e0483d"/>
+    </g>
+  </defs>
+
+  <rect width="1560" height="980" fill="#0b0b0c"/>
+  <rect x="20" y="16" width="1520" height="948" rx="22" fill="#111113" stroke="#1f1f23" stroke-width="2"/>
+  <text x="780" y="66" text-anchor="middle" class="hand white" font-size="36">FEED APPLICATION — WHAT'S ACTUALLY RUNNING</text>
+  <text x="780" y="92" text-anchor="middle" class="hand gray" font-size="15">frontend/ · backend/{api,outbox-poller,fanout-worker,shared} · nginx/ · pg/ — docker compose</text>
+
+  <!-- Browser -->
+  <rect x="70" y="150" width="190" height="70" rx="10" fill="#141217" stroke="#a78bfa" stroke-width="3"/>
+  <text x="165" y="182" text-anchor="middle" class="hand purple" font-size="17">BROWSER</text>
+  <text x="165" y="202" text-anchor="middle" class="mono gray" font-size="12">:8080 (nginx) or :3000 (web direct)</text>
+
+  <!-- nginx -->
+  <rect x="340" y="150" width="190" height="70" rx="10" fill="#161310" stroke="#f2c14e" stroke-width="3"/>
+  <text x="435" y="178" text-anchor="middle" class="hand amber" font-size="17">NGINX :8080</text>
+  <text x="435" y="200" text-anchor="middle" class="mono gray" font-size="11">the only required gateway</text>
+
+  <!-- HOST PORT note -->
+  <rect x="860" y="248" width="340" height="52" rx="8" fill="#0f1a1b" stroke="#3fb8c4" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="878" y="270" class="mono teal" font-size="12">host ports: nginx :8080 (prod) + web :3000 (debug)</text>
+  <text x="878" y="289" class="mono gray" font-size="11">api has NO host port — reachable only via nginx "/api"</text>
+
+  <!-- web -->
+  <rect x="340" y="330" width="190" height="80" rx="10" fill="#141217" stroke="#3fb8c4" stroke-width="3"/>
+  <text x="435" y="360" text-anchor="middle" class="hand teal" font-size="17">WEB :3000</text>
+  <text x="435" y="380" text-anchor="middle" class="mono gray" font-size="11">Next.js (standalone)</text>
+  <text x="435" y="396" text-anchor="middle" class="mono gray" font-size="11">frontend/</text>
+
+  <!-- api -->
+  <rect x="610" y="330" width="200" height="80" rx="10" fill="#161310" stroke="#f2c14e" stroke-width="3"/>
+  <text x="710" y="356" text-anchor="middle" class="hand amber" font-size="17">API</text>
+  <text x="710" y="376" text-anchor="middle" class="mono gray" font-size="11">Express · backend/api</text>
+  <text x="710" y="389" text-anchor="middle" class="mono gray" font-size="10">helmet · zod · rate-limit · pino</text>
+  <rect x="690" y="394" width="40" height="14" rx="4" fill="#2a2210"/>
+  <text x="710" y="404" text-anchor="middle" class="mono amber" font-size="10">:8000</text>
+
+  <!-- arrows: browser -> nginx, browser -> web(direct) -->
+  <line x1="260" y1="175" x2="332" y2="175" stroke="#b5b9c0" stroke-width="2" marker-end="url(#ah)"/>
+  <text x="275" y="165" class="mono gray" font-size="10">/  /api/*  /media/*</text>
+  <path d="M165,220 C165,300 300,340 332,370" fill="none" stroke="#3fb8c4" stroke-width="2" marker-end="url(#ah-teal)"/>
+  <text x="178" y="310" class="mono teal" font-size="10">direct :3000</text>
+
+  <!-- nginx -> web, nginx -> api -->
+  <line x1="420" y1="220" x2="420" y2="324" stroke="#b5b9c0" stroke-width="2" marker-end="url(#ah)"/>
+  <text x="340" y="312" class="mono gray" font-size="11">proxy "/"</text>
+  <path d="M460,220 C560,250 650,280 680,324" fill="none" stroke="#b5b9c0" stroke-width="2" marker-end="url(#ah)"/>
+  <text x="560" y="245" class="mono gray" font-size="11">proxy "/api"</text>
+
+  <!-- media volume -->
+  <rect x="860" y="150" width="210" height="70" rx="10" fill="#14181a" stroke="#6b7280" stroke-width="2.5"/>
+  <text x="965" y="178" text-anchor="middle" class="hand white" font-size="15">MEDIA-DATA VOLUME</text>
+  <text x="965" y="198" text-anchor="middle" class="mono gray" font-size="11">local storage bucket (S3 stand-in)</text>
+  <line x1="530" y1="175" x2="852" y2="175" stroke="#b5b9c0" stroke-width="2" marker-end="url(#ah)"/>
+  <text x="620" y="165" class="mono gray" font-size="11">proxy "/media/*" (read-only)</text>
+  <line x1="810" y1="390" x2="860" y2="390" stroke="#b5b9c0" stroke-width="2"/>
+  <line x1="860" y1="390" x2="860" y2="220" stroke="#b5b9c0" stroke-width="2" marker-end="url(#ah)"/>
+  <text x="815" y="410" class="mono gray" font-size="10">writes uploads</text>
+
+  <!-- API -> redis, postgres, (users check) -->
+  <!-- Redis block -->
+  <rect x="610" y="470" width="470" height="150" rx="12" fill="#161208" stroke="#f2c14e" stroke-width="2.5"/>
+  <use href="#redis" x="628" y="486"/>
+  <text x="668" y="506" class="hand amber" font-size="15">REDIS</text>
+  <rect x="624" y="520" width="135" height="36" rx="6" fill="#1d180b" stroke="#a8862f"/>
+  <text x="691" y="542" text-anchor="middle" class="mono white" font-size="11">feed:&lt;userId&gt;</text>
+  <rect x="770" y="520" width="150" height="36" rx="6" fill="#1d180b" stroke="#a8862f"/>
+  <text x="845" y="542" text-anchor="middle" class="mono white" font-size="11">post:&lt;postId&gt;</text>
+  <rect x="930" y="520" width="135" height="36" rx="6" fill="#1d180b" stroke="#a8862f"/>
+  <text x="997" y="542" text-anchor="middle" class="mono white" font-size="11">celeb:&lt;userId&gt;</text>
+  <text x="624" y="576" class="mono gray" font-size="11">ready list, ≤500 ids</text>
+  <text x="770" y="576" class="mono gray" font-size="11">content cache, write-once</text>
+  <text x="930" y="576" class="mono gray" font-size="11">one shared list/celebrity</text>
+  <text x="624" y="596" class="mono gray" font-size="11">processed:&lt;postId&gt; — idempotency guard (NX, 1h TTL)</text>
+
+  <line x1="710" y1="410" x2="710" y2="464" stroke="#f2c14e" stroke-width="2" marker-end="url(#ah-amber)"/>
+  <text x="716" y="460" class="mono amber" font-size="11">read feed-list + post cache, pull celeb lists</text>
+
+  <!-- Postgres block -->
+  <rect x="80" y="470" width="500" height="150" rx="12" fill="#0f1a1b" stroke="#3fb8c4" stroke-width="2.5"/>
+  <text x="100" y="500" class="hand teal" font-size="16">POSTGRES — pg/init.sql</text>
+  <rect x="100" y="516" width="105" height="36" rx="6" fill="#0d1516" stroke="#2a6f78"/>
+  <text x="152" y="538" text-anchor="middle" class="mono white" font-size="11">users</text>
+  <rect x="215" y="516" width="105" height="36" rx="6" fill="#0d1516" stroke="#2a6f78"/>
+  <text x="267" y="538" text-anchor="middle" class="mono white" font-size="11">follows</text>
+  <rect x="330" y="516" width="105" height="36" rx="6" fill="#0d1516" stroke="#2a6f78"/>
+  <text x="382" y="538" text-anchor="middle" class="mono white" font-size="11">posts</text>
+  <rect x="445" y="516" width="115" height="36" rx="6" fill="#0d1516" stroke="#2a6f78"/>
+  <text x="502" y="538" text-anchor="middle" class="mono white" font-size="11">outbox</text>
+  <text x="100" y="572" class="mono gray" font-size="11">is_celebrity flag</text>
+  <text x="215" y="572" class="mono gray" font-size="11">follower → followee</text>
+  <text x="330" y="572" class="mono gray" font-size="11">body, media_url</text>
+  <text x="445" y="572" class="mono gray" font-size="11">pending / done</text>
+  <text x="100" y="598" class="mono gray" font-size="11">one TXN writes posts + outbox together (README §6.1 — the outbox pattern)</text>
+
+  <line x1="610" y1="390" x2="580" y2="390" stroke="#3fb8c4" stroke-width="2"/>
+  <line x1="580" y1="390" x2="580" y2="464" stroke="#3fb8c4" stroke-width="2" marker-end="url(#ah-teal)"/>
+  <text x="330" y="443" class="mono teal" font-size="11">INSERT post + outbox (txn)</text>
+
+  <!-- outbox -> poller -->
+  <line x1="502" y1="620" x2="502" y2="680" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 5"/>
+  <line x1="502" y1="680" x2="150" y2="680" stroke="#6b7280" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#ah)"/>
+
+  <!-- outbox-poller -->
+  <rect x="80" y="700" width="220" height="90" rx="10" fill="#141416" stroke="#e5e7eb" stroke-width="2.5" stroke-dasharray="7 5"/>
+  <text x="190" y="730" text-anchor="middle" class="hand white" font-size="15">OUTBOX-POLLER</text>
+  <text x="190" y="750" text-anchor="middle" class="mono gray" font-size="11">backend/outbox-poller</text>
+  <text x="190" y="766" text-anchor="middle" class="mono gray" font-size="10">polls pending rows every 1s</text>
+  <text x="190" y="780" text-anchor="middle" class="mono gray" font-size="10">FOR UPDATE SKIP LOCKED</text>
+
+  <!-- kafka -->
+  <rect x="360" y="700" width="220" height="90" rx="10" fill="#1a140a" stroke="#f2c14e" stroke-width="3"/>
+  <text x="470" y="730" text-anchor="middle" class="hand amber" font-size="16">KAFKA</text>
+  <text x="470" y="750" text-anchor="middle" class="mono gray" font-size="11">single broker · KRaft mode</text>
+  <text x="470" y="768" text-anchor="middle" class="mono white" font-size="11">topic: post.created</text>
+  <text x="470" y="784" text-anchor="middle" class="mono gray" font-size="10">partition key = author_id</text>
+
+  <line x1="300" y1="740" x2="352" y2="740" stroke="#f2c14e" stroke-width="2.5" marker-end="url(#ah-amber)"/>
+  <text x="302" y="730" class="mono amber" font-size="10">publish ticket</text>
+
+  <!-- fanout-worker -->
+  <rect x="640" y="700" width="250" height="90" rx="10" fill="#141416" stroke="#4ade80" stroke-width="3"/>
+  <text x="765" y="726" text-anchor="middle" class="hand green" font-size="15">FANOUT-WORKER</text>
+  <text x="765" y="746" text-anchor="middle" class="mono gray" font-size="11">backend/fanout-worker</text>
+  <text x="765" y="764" text-anchor="middle" class="mono gray" font-size="10">consumer group: fanout-workers</text>
+  <text x="765" y="780" text-anchor="middle" class="mono gray" font-size="10">scale: --scale fanout-worker=3</text>
+
+  <line x1="580" y1="745" x2="632" y2="745" stroke="#f2c14e" stroke-width="2.5" marker-end="url(#ah-amber)"/>
+  <text x="582" y="735" class="mono amber" font-size="10">deliver ticket</text>
+
+  <!-- fanout-worker -> postgres (lookup followers) -->
+  <path d="M700,700 C500,660 350,640 300,600" fill="none" stroke="#4ade80" stroke-width="2" marker-end="url(#ah-green)"/>
+  <text x="430" y="650" class="mono green" font-size="10">who follows author? (is_celebrity?)</text>
+
+  <!-- fanout-worker -> redis (push / pull-cache) -->
+  <path d="M870,700 C870,650 850,630 845,624" fill="none" stroke="#4ade80" stroke-width="2" marker-end="url(#ah-green)"/>
+  <text x="878" y="665" class="mono green" font-size="10">push to every follower's</text>
+  <text x="878" y="678" class="mono green" font-size="10">feed list (normal), or append</text>
+  <text x="878" y="691" class="mono green" font-size="10">to ONE celeb list</text>
+
+  <!-- Legend / cards -->
+  <rect x="1100" y="470" width="360" height="300" rx="12" fill="#0e1112" stroke="#2a2a2e" stroke-width="2"/>
+  <text x="1120" y="500" class="hand white" font-size="16">KEY FACTS</text>
+  <text x="1120" y="528" class="mono amber" font-size="12">• api has no host port</text>
+  <text x="1132" y="544" class="mono gray" font-size="11">reachable only via nginx "/api"</text>
+  <text x="1120" y="568" class="mono teal" font-size="12">• web exposed twice</text>
+  <text x="1132" y="584" class="mono gray" font-size="11">:3000 direct (no /api there!) + via nginx</text>
+  <text x="1120" y="608" class="mono white" font-size="12">• outbox pattern</text>
+  <text x="1132" y="624" class="mono gray" font-size="11">post + outbox row, ONE txn — crash-safe</text>
+  <text x="1120" y="648" class="mono green" font-size="12">• idempotent fan-out</text>
+  <text x="1132" y="664" class="mono gray" font-size="11">processed:&lt;id&gt; guards against Kafka</text>
+  <text x="1132" y="678" class="mono gray" font-size="11">at-least-once redelivery</text>
+  <text x="1120" y="702" class="mono amber" font-size="12">• hybrid fan-out</text>
+  <text x="1132" y="718" class="mono gray" font-size="11">normal → pushed to feed:&lt;id&gt; lists</text>
+  <text x="1132" y="732" class="mono gray" font-size="11">celebrity → pulled from celeb:&lt;id&gt;</text>
+  <text x="1120" y="756" class="mono white" font-size="12">• graceful shutdown</text>
+  <text x="1132" y="772" class="mono gray" font-size="11">SIGTERM closes DB/Redis/Kafka cleanly</text>
+
+  <text x="780" y="945" text-anchor="middle" class="hand gray" font-size="13">docker compose up --build  ·  http://localhost:8080</text>
+</svg>

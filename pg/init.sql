@@ -1,41 +1,67 @@
--- Seed the feedapp database. Runs automatically the first time the pg container
--- initializes (as user "app" against database "feedapp").
+-- Seed the feedapp database. Runs automatically the first time the postgres
+-- container initializes (see docker-compose.yml volumes).
 
-CREATE SEQUENCE post_ids START 100;
+-- pgcrypto's crypt()/gen_salt('bf') IS bcrypt — used only to seed demo
+-- passwords below. The API itself hashes/verifies with bcryptjs in Node;
+-- both produce the same standard $2a$ hash format, so either side can
+-- verify the other's hashes.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE users (
-    id           integer PRIMARY KEY,
-    name         text    NOT NULL,
-    is_celebrity boolean NOT NULL DEFAULT false
-);
-
--- starlet is the scaled-down celebrity: 200,000 followers. casey is a normal
--- user with 50. (A real celebrity has 100M+ — the shape of the problem is
--- identical, the lab just doesn't make you wait an hour for it.)
-INSERT INTO users (id, name, is_celebrity) VALUES
-  (1, 'starlet', true),
-  (2, 'casey',   false);
-
-CREATE TABLE posts (
-    id        bigint  PRIMARY KEY,
-    author_id integer NOT NULL REFERENCES users(id),
-    body      text    NOT NULL
+    id            serial PRIMARY KEY,
+    username      text    NOT NULL UNIQUE,
+    password_hash text    NOT NULL,
+    is_celebrity  boolean NOT NULL DEFAULT false
 );
 
 CREATE TABLE follows (
-    follower_id integer NOT NULL,
+    follower_id integer NOT NULL REFERENCES users(id),
     followee_id integer NOT NULL REFERENCES users(id),
     PRIMARY KEY (follower_id, followee_id)
 );
 
--- Followers 1000..200999 follow starlet (200,000 of them).
-INSERT INTO follows (follower_id, followee_id)
-SELECT g, 1 FROM generate_series(1000, 200999) AS g;
-
--- Followers 1000..1049 also follow casey (50 of them) — so follower 1000 and
--- friends see both accounts in their feed.
-INSERT INTO follows (follower_id, followee_id)
-SELECT g, 2 FROM generate_series(1000, 1049) AS g;
-
 CREATE INDEX follows_by_followee ON follows (followee_id);
 CREATE INDEX follows_by_follower ON follows (follower_id);
+
+CREATE TABLE posts (
+    id         bigserial PRIMARY KEY,
+    author_id  integer     NOT NULL REFERENCES users(id),
+    body       text        NOT NULL,
+    media_url  text,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX posts_by_author ON posts (author_id, id DESC);
+
+-- The outbox pattern (README §6.1): the post row and this row are written in
+-- the SAME transaction by the API. The outbox-poller service turns pending
+-- rows into Kafka messages, then flips them to done.
+CREATE TABLE outbox (
+    id         bigserial PRIMARY KEY,
+    post_id    bigint      NOT NULL REFERENCES posts(id),
+    status     text        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done')),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX outbox_pending ON outbox (status, id) WHERE status = 'pending';
+
+-- Demo seed data: three normal users and one celebrity, so the hybrid
+-- push/pull split (README §6.2) is visible immediately in the UI.
+-- All four log in with the password "password123".
+INSERT INTO users (username, password_hash, is_celebrity) VALUES
+  ('alice',   crypt('password123', gen_salt('bf')), false),
+  ('bob',     crypt('password123', gen_salt('bf')), false),
+  ('carol',   crypt('password123', gen_salt('bf')), false),
+  ('starlet', crypt('password123', gen_salt('bf')), true);
+
+-- alice and bob follow the celebrity, and each other.
+INSERT INTO follows (follower_id, followee_id)
+SELECT a.id, b.id FROM users a, users b
+WHERE (a.username, b.username) IN (
+  ('alice', 'bob'),
+  ('alice', 'starlet'),
+  ('bob',   'starlet'),
+  ('bob',   'alice'),
+  ('carol', 'alice'),
+  ('carol', 'starlet')
+);

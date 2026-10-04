@@ -1,0 +1,19 @@
+# Auto-loaded alongside docker-compose.yml (no -f flag needed) — adds direct
+# host ports purely for local debugging (psql, redis-cli, a Kafka client).
+# `api` is deliberately NOT given one here: it stays reachable only through
+# nginx's "/api" route, same as it would behind a real gateway in prod.
+#
+# To run the pure production topology without these, use:
+#   docker compose -f docker-compose.yml up --build
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  kafka:
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
