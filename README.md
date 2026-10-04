@@ -2,7 +2,7 @@
 
 A news feed is the general pattern behind LinkedIn's home feed, X's timeline, or Instagram's feed: an endless, sorted list of posts from accounts you follow. This document captures the full design walkthrough — requirements, scale, high-level design, the fan-out flows, and the bottlenecks/scaling follow-ups.
 
-A rendered HLD architecture diagram for this design is published separately; this file is the detailed written reference.
+> **Diagram:** [News Feed — HLD](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3) — interactive architecture diagram covering the components and flows described in §5–§7 below.
 
 ---
 
@@ -58,6 +58,8 @@ At 10M users × ~200 follows each, the Follows table alone is ~2 billion rows.
 
 ## 5. High-Level Design
 
+📊 **[Open the HLD architecture diagram](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3)** — shows every component below (client, Feed API, Users/Follows/Posts/Outbox tables, the three Redis caches, the outbox→queue→worker pipeline, and the CDN/S3 media path) and how they connect.
+
 ### 5.1 Naive approach: fan-out-on-read (rejected)
 
 On every `GET /feed`:
@@ -88,6 +90,8 @@ This keeps both the read path and the write path cheap and bounded, which is wha
 ---
 
 ## 6. Deep Dives
+
+*The [HLD diagram](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3) above shows the components these flows run through (Outbox table, queue, worker, celebrity cache). Dedicated flow diagrams for "create post," "get feed," and the celebrity hybrid read aren't generated yet — say the word if you'd like those added.*
 
 ### 6.1 The Outbox Pattern (reliable fan-out trigger)
 
@@ -151,6 +155,8 @@ If product wants relevance ranking instead of newest-first:
 ---
 
 ## 7. Bottlenecks & Scaling
+
+*A dedicated bottlenecks/tradeoff diagram (fan-out-on-write vs. fan-out-on-read, cache sizing, sharding) isn't generated yet — the [HLD diagram](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3) shows the underlying components this table refers to.*
 
 | Concern | Resolution |
 |---|---|
