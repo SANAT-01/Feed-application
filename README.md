@@ -2,7 +2,7 @@
 
 A news feed is the general pattern behind LinkedIn's home feed, X's timeline, or Instagram's feed: an endless, sorted list of posts from accounts you follow. This document captures the full design walkthrough — requirements, scale, high-level design, the fan-out flows, and the bottlenecks/scaling follow-ups.
 
-This document is self-contained — every diagram below is plain Mermaid embedded directly in this file.
+> **Diagram:** [News Feed — HLD](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3) — interactive architecture diagram covering the components and flows described in §5–§7 below.
 
 ---
 
@@ -58,89 +58,7 @@ At 10M users × ~200 follows each, the Follows table alone is ~2 billion rows.
 
 ## 5. High-Level Design
 
-### 5.0 Architecture diagram
-
-```mermaid
-flowchart TB
-    alan["📱 Alan<br/>(mobile app)"]
-
-    subgraph server[" "]
-        api["⚙️ App Server<br/>(Feed API)"]
-    end
-
-    subgraph media["Media delivery"]
-        cdn["☁️ CDN"]
-        s3["🗄️ Object Storage (S3)<br/>images / video"]
-    end
-
-    subgraph normal["NORMAL ACCOUNTS — precompute"]
-        feedCache[("📋 Redis — The Feed Cache<br/><i>a.k.a. \"the ready list\"</i><br/>John → 65, 62, …<br/>Alan → 71, 68, 64, …")]
-    end
-
-    isCeleb{{"is_celebrity?<br/>THE LINE — 100,000 followers"}}
-
-    subgraph celeb["CELEBRITY ACCOUNTS — read at open"]
-        celebCache[("⭐ Celebrity List Cache<br/>one shared list<br/>Messi → 88, …")]
-        postCache[("📝 Redis — The Post Cache<br/>71 · good morning<br/>68 · ░░░░░<br/>64 · ░░░░░")]
-    end
-
-    subgraph dbLayer["Database"]
-        usersDb[("users<br/>name | celeb<br/>John | –<br/>Alan | –<br/>Messi | yes")]
-        followsDb[("follows<br/>Alan → John<br/>… → John")]
-        postsDb[("posts<br/>68 · ░░░░░<br/>64 · ░░░░░<br/>71 · good morning<br/>88 · Messi ░░")]
-        outboxDb[("outbox<br/>post 71 · done")]
-    end
-
-    subgraph bgJob["The Background Job"]
-        bgWorker["Background Worker"]
-        queue[["The Queue"]]
-        workerNode(("Worker Node"))
-    end
-
-    alan --> api
-    alan -.->|load media| cdn
-    cdn -.->|origin fetch| s3
-
-    api ==>|"① read — \"the ready list\""| feedCache
-    api <==>|"② direct fetch (writes: post + outbox note, same txn)"| dbLayer
-    api --> isCeleb
-    isCeleb -->|"no → normal"| feedCache
-    isCeleb -->|"yes → celebrity"| celebCache
-    api -->|fetch content| postCache
-    api -->|pull at open| celebCache
-
-    outboxDb -.->|poll pending| bgWorker
-    bgWorker -->|publish ticket| queue
-    queue -->|deliver ticket| workerNode
-    workerNode -->|who follows author?| followsDb
-    workerNode -->|push post ID into every follower's list| feedCache
-    workerNode -.->|populate content| postCache
-
-    feedCache -->|fetch content for IDs| postCache
-
-    style alan fill:#1f6feb,color:#fff
-    style api fill:#238636,color:#fff
-    style bgWorker fill:#238636,color:#fff
-    style queue fill:#9e6a03,color:#fff
-    style workerNode fill:#238636,color:#fff
-    style feedCache fill:#8957e5,color:#fff
-    style postCache fill:#8957e5,color:#fff
-    style celebCache fill:#8957e5,color:#fff
-    style usersDb fill:#57606a,color:#fff
-    style followsDb fill:#57606a,color:#fff
-    style postsDb fill:#57606a,color:#fff
-    style outboxDb fill:#57606a,color:#fff
-    style cdn fill:#1f6feb,color:#fff
-    style s3 fill:#1f6feb,color:#fff
-    style isCeleb fill:#9e6a03,color:#fff
-```
-
-**Naming key** (mirrors the whiteboard walkthrough):
-- **"The ready list"** = the Feed-List Cache — each user's precomputed, newest-first list of post IDs (John's list, Alan's list, …).
-- **"Direct fetch"** = the write path — the App Server writes the new post + its outbox note straight to the Database in one transaction (§6.1), bypassing the cache entirely.
-- **"The Line"** = the 100,000-follower threshold on `users.is_celebrity` that decides push (normal) vs. pull (celebrity).
-- **"The Background Job"** = the outbox poller → queue → worker node pipeline that turns a pending outbox row into pushes onto every follower's ready list.
-- **"The Post Cache"** = the second Redis cache holding actual content (e.g. post 71 = "good morning"), read by *both* normal and celebrity paths once IDs are known.
+📊 **[Open the HLD architecture diagram](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3)** — shows every component below (client, Feed API, Users/Follows/Posts/Outbox tables, the three Redis caches, the outbox→queue→worker pipeline, and the CDN/S3 media path) and how they connect.
 
 ### 5.1 Naive approach: fan-out-on-read (rejected)
 
@@ -173,48 +91,26 @@ This keeps both the read path and the write path cheap and bounded, which is wha
 
 ## 6. Deep Dives
 
+*The [HLD diagram](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3) above shows the components these flows run through (Outbox table, queue, worker, celebrity cache). Dedicated flow diagrams for "create post," "get feed," and the celebrity hybrid read aren't generated yet — say the word if you'd like those added.*
+
 ### 6.1 The Outbox Pattern (reliable fan-out trigger)
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as Feed API
-    participant DB as Posts + Outbox (txn)
-    participant Poller as Outbox Poller
-    participant Queue as Fan-out Queue
-    participant Worker as Fan-out Worker
-    participant Follows as Follows Table
-    participant FeedCache as Feed-List Cache (Redis)
+**Problem:** if "save the post" and "enqueue a fan-out job" are two separate writes to two separate systems (DB, then queue), a crash between them silently drops the fan-out — the post exists but nobody's feed gets it.
 
-    rect rgb(30, 60, 100)
-    note over Client,DB: Synchronous write path (one DB transaction)
-    Client->>API: POST /createPost
-    API->>DB: BEGIN
-    API->>DB: INSERT post (id=71, author=John)
-    API->>DB: INSERT outbox row {post_id:71, status:pending}
-    DB-->>API: COMMIT
-    API-->>Client: 201 Created (post id 71)
-    end
+**Solution:** write both facts in **one database transaction**:
+1. Insert the post into the Posts table.
+2. Insert a row into an **Outbox table**: `{post_id, status: pending}`.
 
-    rect rgb(50, 40, 20)
-    note over Poller,FeedCache: Async fan-out (outbox → queue → worker)
-    loop every few seconds
-        Poller->>DB: SELECT WHERE status = pending
-        DB-->>Poller: row {post_id:71}
-    end
-    Poller->>Queue: publish ticket "post 71 by John"
-    Poller->>DB: UPDATE outbox SET status = done
-    Queue->>Worker: deliver ticket
-    Worker->>Follows: who follows John?
-    Follows-->>Worker: 800 followers
-    loop for each of 800 followers
-        Worker->>FeedCache: push post 71 (skip if already present — idempotent)
-    end
-    Worker->>Queue: ack ticket
-    end
-```
+Both happen or neither does — atomicity guaranteed by the DB, no cross-system write.
 
-**Why it matters:** if "save the post" and "enqueue a fan-out job" were two separate writes to two separate systems, a crash between them would silently drop the fan-out — the post would exist but nobody's feed would get it. Writing the outbox row in the *same transaction* as the post makes the handoff atomic. The idempotency check (skip if the post ID is already in the list) protects against a redelivered ticket double-pushing — any duplicate that still slips through is acceptable per the relaxed refresh requirement (§1).
+A **background poller** periodically scans the Outbox for `pending` rows, publishes a ticket to a **queue** ("post 71 by John is new"), and flips the row to `done`.
+
+A **worker** consumes the ticket:
+1. Look up who follows the author (via the Follows table's "who follows X?" query).
+2. Push the new post ID onto each follower's feed-list cache entry.
+3. Acknowledge the ticket.
+
+**Idempotency:** if a worker crashes after writing to follower lists but before acknowledging, another worker will redeliver the same ticket. Fix: before pushing, check whether the post ID is already present in that follower's list and skip if so. Any duplicate that still slips through is acceptable per the relaxed refresh requirement (§1).
 
 ### 6.2 The Celebrity Problem (hybrid fan-out)
 
@@ -231,27 +127,6 @@ sequenceDiagram
 3. Merge both streams, sort by time, return top 50.
 
 **Rule of thumb:** normal accounts get **pushed**, celebrity accounts get **pulled**.
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as Feed API
-    participant FeedCache as Feed-List Cache<br/>(precomputed, normal follows)
-    participant CelebCache as Celebrity List Cache<br/>(pulled lists)
-    participant PostCache as Post-Content Cache
-
-    Client->>API: GET /feed
-    API->>FeedCache: read Alan's precomputed list
-    FeedCache-->>API: post IDs (normal accounts Alan follows)
-    API->>CelebCache: pull lists for every celebrity Alan follows (e.g. 800)
-    CelebCache-->>API: celebrity post IDs
-    note over API: merge both ID streams, sort by timestamp
-    API->>PostCache: fetch content for merged candidates
-    PostCache-->>API: post content (text + media URL)
-    API-->>Client: 200 OK — top 50 posts
-```
-
-**Why this scales for power users:** a user following thousands of accounts — including hundreds of celebrities — still never triggers a single database query at read time. Every celebrity's recent posts already sit in one small, shared Redis list; reading 800 of those lists is 800 cheap cache hits, not 800 DB round-trips.
 
 **Industry terms:**
 - *Fan-out-on-read* = build the feed fresh at read time.
@@ -281,43 +156,7 @@ If product wants relevance ranking instead of newest-first:
 
 ## 7. Bottlenecks & Scaling
 
-### 7.0 Fan-out decision & scaling flow
-
-```mermaid
-flowchart TD
-    newPost["📝 New post written<br/>(DB txn + outbox note)"] --> shardCheck
-    newPost --> isCeleb{"is_celebrity?<br/>(threshold: 100K followers)"}
-
-    shardCheck["🗂️ Posts Table shard<br/>Cassandra, partition by author+time"]
-
-    isCeleb -->|normal account| push["📤 Fan-out-on-write<br/>push to every follower's list"]
-    isCeleb -->|celebrity, >100K followers| pull["📥 Fan-out-on-read<br/>append to ONE shared cached list"]
-
-    push --> activeFilter{"Is follower active<br/>in last 30 days?"}
-    activeFilter -->|yes| priority["⚡ Priority pass<br/>online followers pushed first"]
-    activeFilter -->|no — inactive| lazy["💤 Skip — no list maintained.<br/>Rebuilt lazily on their return"]
-
-    pull --> viral{"Did it go viral?"}
-    viral -->|yes| replicate["🔥 Replicate across<br/>multiple cache nodes"]
-    viral -->|no| oneList["Stays in the single<br/>celebrity cache list"]
-
-    priority --> assembly["🧩 Feed Assembly<br/>merge + sort + top 50"]
-    replicate --> assembly
-    oneList --> assembly
-    shardCheck -.->|cache miss fallback| assembly
-    lazy -.->|on user's next visit| assembly
-
-    assembly -.->|ranked-feed variant only| rank["🎯 Scoring Service<br/>ranks ~200 candidates at READ time<br/>(can't precompute — likes/comments<br/>change after posting)"]
-
-    style newPost fill:#1f6feb,color:#fff
-    style push fill:#238636,color:#fff
-    style pull fill:#9e6a03,color:#fff
-    style priority fill:#238636,color:#fff
-    style replicate fill:#da3633,color:#fff
-    style lazy fill:#57606a,color:#fff
-    style assembly fill:#8957e5,color:#fff
-    style rank fill:#8957e5,color:#fff
-```
+*A dedicated bottlenecks/tradeoff diagram (fan-out-on-write vs. fan-out-on-read, cache sizing, sharding) isn't generated yet — the [HLD diagram](https://claude.ai/artifact/Q2iv26HxKgWPLq1T92ZSN3) shows the underlying components this table refers to.*
 
 | Concern | Resolution |
 |---|---|
